@@ -335,8 +335,9 @@ def train(rank, world_size, opt):
                 )
                 if metadata["z_lambda"] > 0 or metadata["pos_lambda"] > 0:
                     latent_penalty = (
-                        torch.nn.MSELoss()(g_pred_latent, z) * metadata["z_lambda"]
-                    )
+                        torch.nn.MSELoss()(g_pred_latent, z_s)
+                        + torch.nn.MSELoss()(g_pred_latent, z_a)
+                    ) * metadata["z_lambda"]
                     position_penalty = (
                         torch.nn.MSELoss()(g_pred_position, gen_positions)
                         * metadata["pos_lambda"]
