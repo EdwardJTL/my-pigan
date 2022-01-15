@@ -137,18 +137,18 @@ CelebA = {
 
 CARLA = {
     0: {
-        "batch_size": 10,
+        "batch_size": 30,
         "num_steps": 48,
         "img_size": 32,
-        "batch_split": 1,
+        "batch_split": 4,
         "gen_lr": 4e-5,
         "disc_lr": 4e-4,
     },
     int(50e3): {
-        "batch_size": 5,
+        "batch_size": 15,
         "num_steps": 48,
         "img_size": 64,
-        "batch_split": 2,
+        "batch_split": 5,
         "gen_lr": 2e-5,
         "disc_lr": 2e-4,
     },
@@ -171,7 +171,8 @@ CARLA = {
     "unique_lr": False,
     "weight_decay": 0,
     "r1_lambda": 10,
-    "latent_dim": 256,
+    "latent_dim_s": 256,
+    "latent_dim_a": 256,
     "grad_clip": 1,
     "model": "TALLSIREN",
     "generator": "ImplicitGenerator3d",

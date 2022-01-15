@@ -68,7 +68,8 @@ def train(rank, world_size, opt):
     curriculum = getattr(curriculums, opt.curriculum)
     metadata = curriculums.extract_metadata(curriculum, 0)
 
-    fixed_z = z_sampler((25, 256), device='cpu', dist=metadata['z_dist'])
+    fixed_z_s = z_sampler((25, 256), device='cpu', dist=metadata['z_dist'])
+    fixed_z_a = z_sampler((25, 256), device='cpu', dist=metadata['z_dist'])
 
     SIREN = getattr(siren, metadata['model'])
 
@@ -82,7 +83,7 @@ def train(rank, world_size, opt):
         ema = torch.load(os.path.join(opt.load_dir, 'ema.pth'), map_location=device)
         ema2 = torch.load(os.path.join(opt.load_dir, 'ema2.pth'), map_location=device)
     else:
-        generator = getattr(generators, metadata['generator'])(SIREN, metadata['latent_dim']).to(device)
+        generator = getattr(generators, metadata['generator'])(SIREN, metadata['latent_dim_s'], metadata['latent_dim_a']).to(device)
         discriminator = getattr(discriminators, metadata['discriminator'])().to(device)
         ema = ExponentialMovingAverage(generator.parameters(), decay=0.999)
         ema2 = ExponentialMovingAverage(generator.parameters(), decay=0.9999)
@@ -205,13 +206,15 @@ def train(rank, world_size, opt):
             with torch.cuda.amp.autocast():
                 # Generate images for discriminator training
                 with torch.no_grad():
-                    z = z_sampler((real_imgs.shape[0], metadata['latent_dim']), device=device, dist=metadata['z_dist'])
-                    split_batch_size = z.shape[0] // metadata['batch_split']
+                    z_s = z_sampler((real_imgs.shape[0], metadata['latent_dim']), device=device, dist=metadata['z_dist'])
+                    z_a = z_sampler((real_imgs.shape[0], metadata['latent_dim']), device=device, dist=metadata['z_dist'])
+                    split_batch_size = z_s.shape[0] // metadata['batch_split']
                     gen_imgs = []
                     gen_positions = []
                     for split in range(metadata['batch_split']):
-                        subset_z = z[split * split_batch_size:(split+1) * split_batch_size]
-                        g_imgs, g_pos = generator_ddp(subset_z, **metadata)
+                        subset_z_s = z_s[split * split_batch_size:(split+1) * split_batch_size]
+                        subset_z_a = z_a[split * split_batch_size:(split+1) * split_batch_size]
+                        g_imgs, g_pos = generator_ddp(subset_z_s, subset_z_a, **metadata)
 
                         gen_imgs.append(g_imgs)
                         gen_positions.append(g_pos)
@@ -253,14 +256,16 @@ def train(rank, world_size, opt):
 
 
             # TRAIN GENERATOR
-            z = z_sampler((imgs.shape[0], metadata['latent_dim']), device=device, dist=metadata['z_dist'])
+            z_s = z_sampler((imgs.shape[0], metadata['latent_dim']), device=device, dist=metadata['z_dist'])
+            z_a = z_sampler((imgs.shape[0], metadata['latent_dim']), device=device, dist=metadata['z_dist'])
 
-            split_batch_size = z.shape[0] // metadata['batch_split']
+            split_batch_size = z_s.shape[0] // metadata['batch_split']
 
             for split in range(metadata['batch_split']):
                 with torch.cuda.amp.autocast():
-                    subset_z = z[split * split_batch_size:(split+1) * split_batch_size]
-                    gen_imgs, gen_positions = generator_ddp(subset_z, **metadata)
+                    subset_z_s = z_s[split * split_batch_size:(split+1) * split_batch_size]
+                    subset_z_a = z_a[split * split_batch_size:(split+1) * split_batch_size]
+                    gen_imgs, gen_positions = generator_ddp(subset_z_s, subset_z_a, **metadata)
                     g_preds, g_pred_latent, g_pred_position = discriminator_ddp(gen_imgs, alpha, **metadata)
 
                     topk_percentage = max(0.99 ** (discriminator.step/metadata['topk_interval']), metadata['topk_v']) if 'topk_interval' in metadata and 'topk_v' in metadata else 1
@@ -269,7 +274,7 @@ def train(rank, world_size, opt):
                     g_preds = torch.topk(g_preds, topk_num, dim=0).values
 
                     if metadata['z_lambda'] > 0 or metadata['pos_lambda'] > 0:
-                        latent_penalty = torch.nn.MSELoss()(g_pred_latent, subset_z) * metadata['z_lambda']
+                        latent_penalty = (torch.nn.MSELoss()(g_pred_latent, subset_z_s) + torch.nn.MSELoss()(g_pred_latent, subset_z_a)) * metadata['z_lambda']
                         position_penalty = torch.nn.MSELoss()(g_pred_position, gen_positions) * metadata['pos_lambda']
                         identity_penalty = latent_penalty + position_penalty
                     else:
@@ -301,7 +306,7 @@ def train(rank, world_size, opt):
                             copied_metadata = copy.deepcopy(metadata)
                             copied_metadata['h_stddev'] = copied_metadata['v_stddev'] = 0
                             copied_metadata['img_size'] = 128
-                            gen_imgs = generator_ddp.module.staged_forward(fixed_z.to(device),  **copied_metadata)[0]
+                            gen_imgs = generator_ddp.module.staged_forward(fixed_z_s.to(device), fixed_z_a.to(device), **copied_metadata)[0]
                     save_image(gen_imgs[:25], os.path.join(opt.output_dir, f"{discriminator.step}_fixed.png"), nrow=5, normalize=True)
 
                     with torch.no_grad():
@@ -310,7 +315,7 @@ def train(rank, world_size, opt):
                             copied_metadata['h_stddev'] = copied_metadata['v_stddev'] = 0
                             copied_metadata['h_mean'] += 0.5
                             copied_metadata['img_size'] = 128
-                            gen_imgs = generator_ddp.module.staged_forward(fixed_z.to(device),  **copied_metadata)[0]
+                            gen_imgs = generator_ddp.module.staged_forward(fixed_z_s.to(device), fixed_z_a.to(device), **copied_metadata)[0]
                     save_image(gen_imgs[:25], os.path.join(opt.output_dir, f"{discriminator.step}_tilted.png"), nrow=5, normalize=True)
 
                     ema.store(generator_ddp.parameters())
@@ -321,7 +326,7 @@ def train(rank, world_size, opt):
                             copied_metadata = copy.deepcopy(metadata)
                             copied_metadata['h_stddev'] = copied_metadata['v_stddev'] = 0
                             copied_metadata['img_size'] = 128
-                            gen_imgs = generator_ddp.module.staged_forward(fixed_z.to(device),  **copied_metadata)[0]
+                            gen_imgs = generator_ddp.module.staged_forward(fixed_z_s.to(device), fixed_z_a.to(device), **copied_metadata)[0]
                     save_image(gen_imgs[:25], os.path.join(opt.output_dir, f"{discriminator.step}_fixed_ema.png"), nrow=5, normalize=True)
 
                     with torch.no_grad():
@@ -330,7 +335,7 @@ def train(rank, world_size, opt):
                             copied_metadata['h_stddev'] = copied_metadata['v_stddev'] = 0
                             copied_metadata['h_mean'] += 0.5
                             copied_metadata['img_size'] = 128
-                            gen_imgs = generator_ddp.module.staged_forward(fixed_z.to(device),  **copied_metadata)[0]
+                            gen_imgs = generator_ddp.module.staged_forward(fixed_z_s.to(device), fixed_z_a.to(device), **copied_metadata)[0]
                     save_image(gen_imgs[:25], os.path.join(opt.output_dir, f"{discriminator.step}_tilted_ema.png"), nrow=5, normalize=True)
 
                     with torch.no_grad():
@@ -339,7 +344,7 @@ def train(rank, world_size, opt):
                             copied_metadata['img_size'] = 128
                             copied_metadata['h_stddev'] = copied_metadata['v_stddev'] = 0
                             copied_metadata['psi'] = 0.7
-                            gen_imgs = generator_ddp.module.staged_forward(torch.randn_like(fixed_z).to(device),  **copied_metadata)[0]
+                            gen_imgs = generator_ddp.module.staged_forward(torch.randn_like(fixed_z_s).to(device), torch.randn_like(fixed_z_a).to(device), **copied_metadata)[0]
                     save_image(gen_imgs[:25], os.path.join(opt.output_dir, f"{discriminator.step}_random.png"), nrow=5, normalize=True)
 
                     ema.restore(generator_ddp.parameters())

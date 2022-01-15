@@ -10,10 +10,11 @@ from torch.cuda.amp import autocast
 from .volumetric_rendering import *
 
 class ImplicitGenerator3d(nn.Module):
-    def __init__(self, siren, z_dim, **kwargs):
+    def __init__(self, siren, z_s_dim, z_a_dim, **kwargs):
         super().__init__()
-        self.z_dim = z_dim
-        self.siren = siren(output_dim=4, z_dim=self.z_dim, input_dim=3, device=None)
+        self.z_s_dim = z_s_dim
+        self.z_a_dim = z_a_dim
+        self.siren = siren(output_dim=4, z_s_dim=self.z_s_dim, z_a_dim=self.z_a_dim, input_dim=3, device=None)
         self.epoch = 0
         self.step = 0
 
@@ -23,13 +24,13 @@ class ImplicitGenerator3d(nn.Module):
 
         self.generate_avg_frequencies()
 
-    def forward(self, z, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, hierarchical_sample, sample_dist=None, lock_view_dependence=False, **kwargs):
+    def forward(self, z_s, z_a, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, hierarchical_sample, sample_dist=None, lock_view_dependence=False, **kwargs):
         """
         Generates images from a noise vector, rendering parameters, and camera distribution.
         Uses the hierarchical sampling scheme described in NeRF.
         """
 
-        batch_size = z.shape[0]
+        batch_size = z_s.shape[0]
 
         # Generate initial camera rays and sample points.
         with torch.no_grad():
@@ -46,7 +47,7 @@ class ImplicitGenerator3d(nn.Module):
                 transformed_ray_directions_expanded[..., -1] = -1
 
         # Model prediction on course points
-        coarse_output = self.siren(transformed_points, z, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, num_steps, 4)
+        coarse_output = self.siren(transformed_points, z_s, z_a, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, num_steps, 4)
 
         # Re-sample fine points alont camera rays, as described in NeRF
         if hierarchical_sample:
@@ -74,7 +75,7 @@ class ImplicitGenerator3d(nn.Module):
                 #### end new importance sampling
 
             # Model prediction on re-sampled find points
-            fine_output = self.siren(fine_points, z, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, -1, 4)
+            fine_output = self.siren(fine_points, z_s, z_a, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, -1, 4)
 
             # Combine course and fine points
             all_outputs = torch.cat([fine_output, coarse_output], dim = -2)
@@ -99,30 +100,37 @@ class ImplicitGenerator3d(nn.Module):
     def generate_avg_frequencies(self):
         """Calculates average frequencies and phase shifts"""
 
-        z = torch.randn((10000, self.z_dim), device=self.siren.device)
+        z_s = torch.randn((10000, self.z_s_dim), device=self.siren.device)
+        z_a = torch.randn((10000, self.z_a_dim), device=self.siren.device)
         with torch.no_grad():
-            frequencies, phase_shifts = self.siren.mapping_network(z)
-        self.avg_frequencies = frequencies.mean(0, keepdim=True)
-        self.avg_phase_shifts = phase_shifts.mean(0, keepdim=True)
-        return self.avg_frequencies, self.avg_phase_shifts
+            freq_s, phase_shifts_s = self.siren.mapping_network_s(z_s)
+            freq_a, phase_shifts_a = self.siren.mapping_network_a(z_a)
+        self.avg_freq_s = freq_s.mean(0, keepdim=True)
+        self.avg_phase_shifts_s = phase_shifts_s.mean(0, keepdim=True)
+        self.avg_freq_a = freq_a.mean(0, keepdim=True)
+        self.avg_phase_shifts_a = phase_shifts_a.mean(0, keepdim=True)
+        return self.avg_freq_s, self.avg_phase_shifts_s, self.avg_freq_a, self.avg_phase_shifts_a
 
 
-    def staged_forward(self, z, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, psi=1, lock_view_dependence=False, max_batch_size=50000, depth_map=False, near_clip=0, far_clip=2, sample_dist=None, hierarchical_sample=False, **kwargs):
+    def staged_forward(self, z_s, z_a, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, psi=1, lock_view_dependence=False, max_batch_size=50000, depth_map=False, near_clip=0, far_clip=2, sample_dist=None, hierarchical_sample=False, **kwargs):
         """
         Similar to forward but used for inference.
-        Calls the model sequencially using max_batch_size to limit memory usage.
+        Calls the model sequentially using max_batch_size to limit memory usage.
         """
 
-        batch_size = z.shape[0]
+        batch_size = z_s.shape[0]
 
         self.generate_avg_frequencies()
 
         with torch.no_grad():
 
-            raw_frequencies, raw_phase_shifts = self.siren.mapping_network(z)
+            raw_freq_s, raw_phase_shifts_s = self.siren.mapping_network_s(z_s)
+            raw_freq_a, raw_phase_shifts_a = self.siren.mapping_network_a(z_a)
 
-            truncated_frequencies = self.avg_frequencies + psi * (raw_frequencies - self.avg_frequencies)
-            truncated_phase_shifts = self.avg_phase_shifts + psi * (raw_phase_shifts - self.avg_phase_shifts)
+            truncated_freq_s = self.avg_freq_s + psi * (raw_freq_s - self.avg_freq_s)
+            truncated_phase_shifts_s = self.avg_phase_shifts_s + psi * (raw_phase_shifts_s - self.avg_phase_shifts_s)
+            truncated_freq_a = self.avg_freq_a + psi * (raw_freq_a - self.avg_freq_a)
+            truncated_phase_shifts_a = self.avg_phase_shifts_a + psi * (raw_phase_shifts_a - self.avg_phase_shifts_a)
 
 
             points_cam, z_vals, rays_d_cam = get_initial_rays_trig(batch_size, num_steps, resolution=(img_size, img_size), device=self.device, fov=fov, ray_start=ray_start, ray_end=ray_end) # batch_size, pixels, num_steps, 1
@@ -144,7 +152,7 @@ class ImplicitGenerator3d(nn.Module):
                 head = 0
                 while head < transformed_points.shape[1]:
                     tail = head + max_batch_size
-                    coarse_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(transformed_points[b:b+1, head:tail], truncated_frequencies[b:b+1], truncated_phase_shifts[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
+                    coarse_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(transformed_points[b:b+1, head:tail], truncated_freq_s[b:b+1], truncated_phase_shifts_s[b:b+1], truncated_freq_a[b:b+1], truncated_phase_shifts_a[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
                     head += max_batch_size
 
             coarse_output = coarse_output.reshape(batch_size, img_size * img_size, num_steps, 4)
@@ -179,7 +187,7 @@ class ImplicitGenerator3d(nn.Module):
                     head = 0
                     while head < fine_points.shape[1]:
                         tail = head + max_batch_size
-                        fine_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(fine_points[b:b+1, head:tail], truncated_frequencies[b:b+1], truncated_phase_shifts[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
+                        fine_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(fine_points[b:b+1, head:tail], truncated_freq_s[b:b+1], truncated_phase_shifts_s[b:b+1], truncated_freq_a[b:b+1], truncated_phase_shifts_a[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
                         head += max_batch_size
 
                 fine_output = fine_output.reshape(batch_size, img_size * img_size, num_steps, 4)
@@ -204,8 +212,8 @@ class ImplicitGenerator3d(nn.Module):
         return pixels, depth_map
 
     # Used for rendering interpolations
-    def staged_forward_with_frequencies(self, truncated_frequencies, truncated_phase_shifts, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, psi=0.7, lock_view_dependence=False, max_batch_size=50000, depth_map=False, near_clip=0, far_clip=2, sample_dist=None, hierarchical_sample=False, **kwargs):
-        batch_size = truncated_frequencies.shape[0]
+    def staged_forward_with_frequencies(self, truncated_freq_s, truncated_phase_shifts_s, truncated_freq_a, truncated_phase_shifts_a, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, psi=0.7, lock_view_dependence=False, max_batch_size=50000, depth_map=False, near_clip=0, far_clip=2, sample_dist=None, hierarchical_sample=False, **kwargs):
+        batch_size = truncated_freq_s.shape[0]
 
         with torch.no_grad():
             points_cam, z_vals, rays_d_cam = get_initial_rays_trig(batch_size, num_steps, resolution=(img_size, img_size), device=self.device, fov=fov, ray_start=ray_start, ray_end=ray_end) # batch_size, pixels, num_steps, 1
@@ -227,7 +235,7 @@ class ImplicitGenerator3d(nn.Module):
                 head = 0
                 while head < transformed_points.shape[1]:
                     tail = head + max_batch_size
-                    coarse_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(transformed_points[b:b+1, head:tail], truncated_frequencies[b:b+1], truncated_phase_shifts[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
+                    coarse_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(transformed_points[b:b+1, head:tail], truncated_freq_s[b:b+1], truncated_phase_shifts_s[b:b+1], truncated_freq_a[b:b+1], truncated_phase_shifts_a[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
                     head += max_batch_size
 
             coarse_output = coarse_output.reshape(batch_size, img_size * img_size, num_steps, 4)
@@ -261,7 +269,7 @@ class ImplicitGenerator3d(nn.Module):
                     head = 0
                     while head < fine_points.shape[1]:
                         tail = head + max_batch_size
-                        fine_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(fine_points[b:b+1, head:tail], truncated_frequencies[b:b+1], truncated_phase_shifts[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
+                        fine_output[b:b+1, head:tail] = self.siren.forward_with_frequencies_phase_shifts(fine_points[b:b+1, head:tail], truncated_freq_s[b:b+1], truncated_phase_shifts_s[b:b+1], truncated_freq_a[b:b+1], truncated_phase_shifts_a[b:b+1], ray_directions=transformed_ray_directions_expanded[b:b+1, head:tail])
                         head += max_batch_size
 
                 fine_output = fine_output.reshape(batch_size, img_size * img_size, num_steps, 4)
@@ -287,8 +295,8 @@ class ImplicitGenerator3d(nn.Module):
         return pixels, depth_map
 
 
-    def forward_with_frequencies(self, frequencies, phase_shifts, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, hierarchical_sample, sample_dist=None, lock_view_dependence=False, **kwargs):
-        batch_size = frequencies.shape[0]
+    def forward_with_frequencies(self, freq_s, phase_shifts_s, freq_a, phase_shifts_a, img_size, fov, ray_start, ray_end, num_steps, h_stddev, v_stddev, h_mean, v_mean, hierarchical_sample, sample_dist=None, lock_view_dependence=False, **kwargs):
+        batch_size = freq_s.shape[0]
 
         points_cam, z_vals, rays_d_cam = get_initial_rays_trig(batch_size, num_steps, resolution=(img_size, img_size), device=self.device, fov=fov, ray_start=ray_start, ray_end=ray_end) # batch_size, pixels, num_steps, 1
         transformed_points, z_vals, transformed_ray_directions, transformed_ray_origins, pitch, yaw = transform_sampled_points(points_cam, z_vals, rays_d_cam, h_stddev=h_stddev, v_stddev=v_stddev, h_mean=h_mean, v_mean=v_mean, device=self.device, mode=sample_dist)
@@ -303,7 +311,7 @@ class ImplicitGenerator3d(nn.Module):
             transformed_ray_directions_expanded = torch.zeros_like(transformed_ray_directions_expanded)
             transformed_ray_directions_expanded[..., -1] = -1
             
-        coarse_output = self.siren.forward_with_frequencies_phase_shifts(transformed_points, frequencies, phase_shifts, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, num_steps, 4)
+        coarse_output = self.siren.forward_with_frequencies_phase_shifts(transformed_points, freq_s, phase_shifts_s, freq_a, phase_shifts_a, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, num_steps, 4)
         
         if hierarchical_sample:
             with torch.no_grad():
@@ -329,7 +337,7 @@ class ImplicitGenerator3d(nn.Module):
                     transformed_ray_directions_expanded = torch.zeros_like(transformed_ray_directions_expanded)
                     transformed_ray_directions_expanded[..., -1] = -1
 
-            fine_output = self.siren.forward_with_frequencies_phase_shifts(fine_points, frequencies, phase_shifts, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, -1, 4)
+            fine_output = self.siren.forward_with_frequencies_phase_shifts(fine_points, freq_s, phase_shifts_s, freq_a, phase_shifts_a, ray_directions=transformed_ray_directions_expanded).reshape(batch_size, img_size * img_size, -1, 4)
 
             all_outputs = torch.cat([fine_output, coarse_output], dim = -2)
             all_z_vals = torch.cat([fine_z_vals, z_vals], dim = -2)

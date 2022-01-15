@@ -97,11 +97,12 @@ class FiLMLayer(nn.Module):
 class TALLSIREN(nn.Module):
     """Primary SIREN  architecture used in pi-GAN generators."""
 
-    def __init__(self, input_dim=2, z_dim=100, hidden_dim=256, output_dim=1, device=None):
+    def __init__(self, input_dim=2, z_s_dim=100, z_a_dim=100, hidden_dim=256, output_dim=1, device=None):
         super().__init__()
         self.device = device
         self.input_dim = input_dim
-        self.z_dim = z_dim
+        self.z_s_dim = z_s_dim
+        self.z_a_dim = z_a_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
 
@@ -120,7 +121,8 @@ class TALLSIREN(nn.Module):
         self.color_layer_sine = FiLMLayer(hidden_dim + 3, hidden_dim)
         self.color_layer_linear = nn.Sequential(nn.Linear(hidden_dim, 3), nn.Sigmoid())
 
-        self.mapping_network = CustomMappingNetwork(z_dim, 256, (len(self.network) + 1)*hidden_dim*2)
+        self.mapping_network_s = CustomMappingNetwork(z_s_dim, 256, len(self.network)*hidden_dim*2)
+        self.mapping_network_a = CustomMappingNetwork(z_a_dim, 256, hidden_dim*2)
 
         self.network.apply(frequency_init(25))
         self.final_layer.apply(frequency_init(25))
@@ -128,22 +130,24 @@ class TALLSIREN(nn.Module):
         self.color_layer_linear.apply(frequency_init(25))
         self.network[0].apply(first_layer_film_sine_init)
 
-    def forward(self, input, z, ray_directions, **kwargs):
-        frequencies, phase_shifts = self.mapping_network(z)
-        return self.forward_with_frequencies_phase_shifts(input, frequencies, phase_shifts, ray_directions, **kwargs)
+    def forward(self, input, z_s, z_a, ray_directions, **kwargs):
+        freq_s, phase_shifts_s = self.mapping_network_s(z_s)
+        freq_a, phase_shifts_a = self.mapping_network_a(z_a)
+        return self.forward_with_frequencies_phase_shifts(input, freq_s, phase_shifts_s, freq_a, phase_shifts_a, ray_directions, **kwargs)
 
-    def forward_with_frequencies_phase_shifts(self, input, frequencies, phase_shifts, ray_directions, **kwargs):
-        frequencies = frequencies*15 + 30
+    def forward_with_frequencies_phase_shifts(self, input, freq_s, phase_shifts_s, freq_a, phase_shifts_a, ray_directions, **kwargs):
+        freq_s = freq_s * 15 + 30
+        freq_a = freq_a * 15 + 30
 
         x = input
 
         for index, layer in enumerate(self.network):
             start = index * self.hidden_dim
             end = (index+1) * self.hidden_dim
-            x = layer(x, frequencies[..., start:end], phase_shifts[..., start:end])
+            x = layer(x, freq_s[..., start:end], phase_shifts_s[..., start:end])
 
         sigma = self.final_layer(x)
-        rbg = self.color_layer_sine(torch.cat([ray_directions, x], dim=-1), frequencies[..., -self.hidden_dim:], phase_shifts[..., -self.hidden_dim:])
+        rbg = self.color_layer_sine(torch.cat([ray_directions, x], dim=-1), freq_a, phase_shifts_a)
         rbg = self.color_layer_linear(rbg)
 
         return torch.cat([rbg, sigma], dim=-1)
