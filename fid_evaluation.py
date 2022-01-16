@@ -84,11 +84,15 @@ def output_images(
         pbar = tqdm("generating images", total=num_imgs)
     with torch.no_grad():
         while img_counter < num_imgs:
-            z = torch.randn(
-                (metadata["batch_size"], generator.module.z_dim),
+            z_s = torch.randn(
+                (metadata["batch_size"], generator.module.z_s_dim),
                 device=generator.module.device,
             )
-            generated_imgs, _ = generator.module.staged_forward(z, **metadata)
+            z_a = torch.randn(
+                (metadata["batch_size"], generator.module.z_a_dim),
+                device=generator.module.device,
+            )
+            generated_imgs, _ = generator.module.staged_forward(z_s, z_a, **metadata)
 
             for img in generated_imgs:
                 save_image(
