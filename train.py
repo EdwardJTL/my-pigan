@@ -280,12 +280,12 @@ def train(rank, world_size, opt):
                 # Generate images for discriminator training
                 with torch.no_grad():
                     z_s = z_sampler(
-                        (real_imgs.shape[0], metadata["latent_dim"]),
+                        (real_imgs.shape[0], metadata["latent_dim_s"]),
                         device=device,
                         dist=metadata["z_dist"],
                     )
                     z_a = z_sampler(
-                        (real_imgs.shape[0], metadata["latent_dim"]),
+                        (real_imgs.shape[0], metadata["latent_dim_a"]),
                         device=device,
                         dist=metadata["z_dist"],
                     )
@@ -364,12 +364,12 @@ def train(rank, world_size, opt):
 
             # TRAIN GENERATOR
             z_s = z_sampler(
-                (imgs.shape[0], metadata["latent_dim"]),
+                (imgs.shape[0], metadata["latent_dim_s"]),
                 device=device,
                 dist=metadata["z_dist"],
             )
             z_a = z_sampler(
-                (imgs.shape[0], metadata["latent_dim"]),
+                (imgs.shape[0], metadata["latent_dim_a"]),
                 device=device,
                 dist=metadata["z_dist"],
             )
