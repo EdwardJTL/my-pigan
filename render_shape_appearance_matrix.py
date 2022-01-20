@@ -79,7 +79,7 @@ def make_matrix(
     for z_s_idx in tqdm(range(s_num)):
         for z_a_idx in range(a_num):
             print("Making Image at ({}, {})".format(z_s_idx, z_a_idx))
-            img, depth_img = generate_image(gen, z_s[z_s_idx, :], z_a[z_a_idx, :], **curriculum)
+            img, depth_img = generate_image(gen, z_s[z_s_idx, :].unsqueeze(0), z_a[z_a_idx, :].unsqueeze(0), **curriculum)
             PIL_image = Image.fromarray(np.uint8(img)).convert("RGB")
             # PIL_image.save("{}_{}.png".format(iy, ip))
             canvas.paste(
@@ -89,12 +89,12 @@ def make_matrix(
 
 
 def main():
-    model_path = "/h/edwardl/pigan/output/5320339/DELAYEDPURGE/"
+    model_path = "/h/edwardl/pigan/output/5704257/DELAYEDPURGE/"
     curriculum = "CARLA"
-    img_size = 128
+    img_size = 64
     s_num = 5
     a_num = 5
-    seed = 0
+    seed = 10
     print("Starting Generation")
     image = make_matrix(
         load_generator(model_path),
