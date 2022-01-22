@@ -198,19 +198,13 @@ class ImplicitGenerator3d(nn.Module):
         """Calculates average frequencies and phase shifts"""
 
         z_s = torch.randn((10000, self.z_s_dim), device=self.siren.device)
-        z_a = torch.randn((10000, self.z_a_dim), device=self.siren.device)
         with torch.no_grad():
             freq_s, phase_shifts_s = self.siren.mapping_network_s(z_s)
-            freq_a, phase_shifts_a = self.siren.mapping_network_a(z_a)
         self.avg_freq_s = freq_s.mean(0, keepdim=True)
         self.avg_phase_shifts_s = phase_shifts_s.mean(0, keepdim=True)
-        self.avg_freq_a = freq_a.mean(0, keepdim=True)
-        self.avg_phase_shifts_a = phase_shifts_a.mean(0, keepdim=True)
         return (
             self.avg_freq_s,
             self.avg_phase_shifts_s,
-            self.avg_freq_a,
-            self.avg_phase_shifts_a,
         )
 
     def staged_forward(
@@ -248,15 +242,10 @@ class ImplicitGenerator3d(nn.Module):
         with torch.no_grad():
 
             raw_freq_s, raw_phase_shifts_s = self.siren.mapping_network_s(z_s)
-            raw_freq_a, raw_phase_shifts_a = self.siren.mapping_network_a(z_a)
 
             truncated_freq_s = self.avg_freq_s + psi * (raw_freq_s - self.avg_freq_s)
             truncated_phase_shifts_s = self.avg_phase_shifts_s + psi * (
                 raw_phase_shifts_s - self.avg_phase_shifts_s
-            )
-            truncated_freq_a = self.avg_freq_a + psi * (raw_freq_a - self.avg_freq_a)
-            truncated_phase_shifts_a = self.avg_phase_shifts_a + psi * (
-                raw_phase_shifts_a - self.avg_phase_shifts_a
             )
 
             points_cam, z_vals, rays_d_cam = get_initial_rays_trig(
@@ -322,8 +311,7 @@ class ImplicitGenerator3d(nn.Module):
                         transformed_points[b : b + 1, head:tail],
                         truncated_freq_s[b : b + 1],
                         truncated_phase_shifts_s[b : b + 1],
-                        truncated_freq_a[b : b + 1],
-                        truncated_phase_shifts_a[b : b + 1],
+                        z_a[b : b + 1],
                         ray_directions=transformed_ray_directions_expanded[
                             b : b + 1, head:tail
                         ],
@@ -397,8 +385,7 @@ class ImplicitGenerator3d(nn.Module):
                             fine_points[b : b + 1, head:tail],
                             truncated_freq_s[b : b + 1],
                             truncated_phase_shifts_s[b : b + 1],
-                            truncated_freq_a[b : b + 1],
-                            truncated_phase_shifts_a[b : b + 1],
+                            z_a[b : b + 1],
                             ray_directions=transformed_ray_directions_expanded[
                                 b : b + 1, head:tail
                             ],
@@ -442,8 +429,7 @@ class ImplicitGenerator3d(nn.Module):
         self,
         truncated_freq_s,
         truncated_phase_shifts_s,
-        truncated_freq_a,
-        truncated_phase_shifts_a,
+        z_a,
         img_size,
         fov,
         ray_start,
@@ -529,8 +515,7 @@ class ImplicitGenerator3d(nn.Module):
                         transformed_points[b : b + 1, head:tail],
                         truncated_freq_s[b : b + 1],
                         truncated_phase_shifts_s[b : b + 1],
-                        truncated_freq_a[b : b + 1],
-                        truncated_phase_shifts_a[b : b + 1],
+                        z_a[b : b + 1],
                         ray_directions=transformed_ray_directions_expanded[
                             b : b + 1, head:tail
                         ],
@@ -607,8 +592,7 @@ class ImplicitGenerator3d(nn.Module):
                             fine_points[b : b + 1, head:tail],
                             truncated_freq_s[b : b + 1],
                             truncated_phase_shifts_s[b : b + 1],
-                            truncated_freq_a[b : b + 1],
-                            truncated_phase_shifts_a[b : b + 1],
+                            z_a[b : b + 1],
                             ray_directions=transformed_ray_directions_expanded[
                                 b : b + 1, head:tail
                             ],
@@ -652,8 +636,7 @@ class ImplicitGenerator3d(nn.Module):
         self,
         freq_s,
         phase_shifts_s,
-        freq_a,
-        phase_shifts_a,
+        z_a,
         img_size,
         fov,
         ray_start,
@@ -723,8 +706,7 @@ class ImplicitGenerator3d(nn.Module):
             transformed_points,
             freq_s,
             phase_shifts_s,
-            freq_a,
-            phase_shifts_a,
+            z_a,
             ray_directions=transformed_ray_directions_expanded,
         ).reshape(batch_size, img_size * img_size, num_steps, 4)
 
@@ -780,8 +762,7 @@ class ImplicitGenerator3d(nn.Module):
                 fine_points,
                 freq_s,
                 phase_shifts_s,
-                freq_a,
-                phase_shifts_a,
+                z_a,
                 ray_directions=transformed_ray_directions_expanded,
             ).reshape(batch_size, img_size * img_size, -1, 4)
 
