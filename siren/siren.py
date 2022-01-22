@@ -191,6 +191,74 @@ class TALLSIREN(nn.Module):
         return torch.cat([rbg, sigma], dim=-1)
 
 
+class CROSSCONDSIREN(nn.Module):
+    """Alternative siren architecture where shape output is used to condition appearance."""
+
+    def __init__(self, input_dim=2, z_s_dim=100, z_a_dim=100, hidden_dim=256, output_dim=1, device=None):
+        super().__init__()
+        self.device = device
+        self.input_dim = input_dim
+        self.z_s_dim = z_s_dim
+        self.z_a_dim = z_a_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+
+        self.shared_network = nn.ModuleList(
+            [
+                FiLMLayer(input_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+            ]
+        )
+        self.final_layer = nn.Linear(hidden_dim, 1)
+
+        self.color_layer_sine = FiLMLayer(z_a_dim+3, hidden_dim)
+        self.color_layer_linear = nn.Sequential(nn.Linear(hidden_dim, 3), nn.Sigmoid())
+
+        self.mapping_network_s = CustomMappingNetwork(
+            z_s_dim, 256, len(self.shared_network) * hidden_dim * 2
+        )
+        self.mapping_network_a = CustomMappingNetwork(hidden_dim, 256, hidden_dim * 2)
+
+        self.shared_network.apply(frequency_init(25))
+        self.final_layer.apply(frequency_init(25))
+        self.color_layer_sine.apply(frequency_init(25))
+        self.color_layer_linear.apply(frequency_init(25))
+        self.shared_network[0].apply(first_layer_film_sine_init)
+
+    def forward(self, input, z_s, z_a, ray_directions, **kwargs):
+        freq_s, phase_shifts_s = self.mapping_network_s(z_s)
+
+        return self.forward_with_frequencies_phase_shifts(input, freq_s, phase_shifts_s, z_a, ray_directions, **kwargs)
+
+    def forward_with_frequencies_phase_shifts(self, input, freq_s, phase_shifts_s, z_a, ray_directions, **kwargs):
+        freq_s = freq_s * 15 + 30
+
+        x = input
+
+        for index, layer in enumerate(self.shared_network):
+            start = index * self.hidden_dim
+            end = (index + 1) * self.hidden_dim
+            x = layer(x, freq_s[..., start:end], phase_shifts_s[..., start:end])
+
+        sigma = self.final_layer(x)
+
+        freq_a, phase_shifts_a = self.mapping_network_a(x)
+        freq_a = freq_a * 15 + 30
+
+        rbg = self.color_layer_sine(
+            torch.cat([ray_directions, z_a], dim=-1), freq_a, phase_shifts_a
+        )
+        rbg = self.color_layer_linear(rbg)
+
+        return torch.cat([rbg, sigma], dim=-1)
+
+
 class UniformBoxWarp(nn.Module):
     def __init__(self, sidelength):
         super().__init__()
