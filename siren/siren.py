@@ -219,6 +219,7 @@ class TWOBRANCHSIREN(nn.Module):
         z_s_dim=100,
         z_a_dim=100,
         hidden_dim=256,
+        output_dim=1,
         device=None,
     ):
         super().__init__()
@@ -227,6 +228,7 @@ class TWOBRANCHSIREN(nn.Module):
         self.z_s_dim = z_s_dim
         self.z_a_dim = z_a_dim
         self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
 
         self.position_network = self.PositionMappingNetwork(input_dim, hidden_dim, hidden_dim)
 
