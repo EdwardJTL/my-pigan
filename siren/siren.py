@@ -191,6 +191,121 @@ class TALLSIREN(nn.Module):
         return torch.cat([rbg, sigma], dim=-1)
 
 
+class TWOBRANCHSIREN(nn.Module):
+    """ Modeled after TALLSIREN; but two branches of SIREN"""
+    class PositionMappingNetwork(nn.Module):
+        def __init__(self, input_dim, hidden_dim, output_dim):
+            super().__init__()
+
+            self.network = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Linear(hidden_dim, output_dim),
+            )
+
+            self.network.apply(kaiming_leaky_init)
+            with torch.no_grad():
+                self.network[-1].weight *= 0.25
+
+        def forward(self, x):
+            return self.network(x)
+
+
+    def __init__(
+        self,
+        input_dim=2,
+        z_s_dim=100,
+        z_a_dim=100,
+        hidden_dim=256,
+        device=None,
+    ):
+        super().__init__()
+        self.device = device
+        self.input_dim = input_dim
+        self.z_s_dim = z_s_dim
+        self.z_a_dim = z_a_dim
+        self.hidden_dim = hidden_dim
+
+        self.position_network = self.PositionMappingNetwork(input_dim, hidden_dim, hidden_dim)
+
+        self.shape_network = nn.ModuleList(
+            [
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+            ]
+        )
+        self.shape_final_layer = nn.Linear(hidden_dim, 1)
+
+        self.color_network = nn.ModuleList(
+            [
+                FiLMLayer(hidden_dim + 3, hidden_dim),
+                FiLMLayer(hidden_dim, hidden_dim),
+            ]
+        )
+        self.color_final_layer = nn.Sequential(nn.Linear(hidden_dim, 3), nn.Sigmoid())
+
+        self.mapping_network_s = CustomMappingNetwork(
+            z_s_dim, 256, len(self.shape_network) * hidden_dim * 2
+        )
+        self.mapping_network_a = CustomMappingNetwork(z_a_dim, 256, len(self.color_network) * hidden_dim * 2)
+
+        self.shape_network.apply(frequency_init(25))
+        self.color_network.apply(frequency_init(25))
+        self.shape_final_layer.apply(frequency_init(25))
+        self.color_final_layer.apply(frequency_init(25))
+        self.shape_network[0].apply(first_layer_film_sine_init)
+        self.color_network[0].apply(first_layer_film_sine_init)
+
+    def forward(self, input, z_s, z_a, ray_directions, **kwargs):
+        freq_s, phase_shifts_s = self.mapping_network_s(z_s)
+        freq_a, phase_shifts_a = self.mapping_network_a(z_a)
+        return self.forward_with_frequencies_phase_shifts(
+            input,
+            freq_s,
+            phase_shifts_s,
+            freq_a,
+            phase_shifts_a,
+            ray_directions,
+            **kwargs
+        )
+
+    def forward_with_frequencies_phase_shifts(
+            self,
+            input,
+            freq_s,
+            phase_shifts_s,
+            freq_a,
+            phase_shifts_a,
+            ray_directions,
+            **kwargs
+    ):
+        freq_s = freq_s * 15 + 30
+        freq_a = freq_a * 15 + 30
+
+        x = self.position_network(input)
+        x_s = x
+        x_a = torch.cat([ray_directions, x], dim=-1)
+
+        for index, layer in enumerate(self.shape_network):
+            start = index * self.hidden_dim
+            end = (index + 1) * self.hidden_dim
+            x_s = layer(x_s, freq_s[:, start:end], phase_shifts_s[:, start:end])
+        sigma = self.shape_final_layer(x_s)
+
+        for index, layer in enumerate(self.color_network):
+            start = index * self.hidden_dim
+            end = (index + 1) * self.hidden_dim
+            x_a = layer(x_a, freq_a[:, start:end], phase_shifts_a[:, start:end])
+        rbg = self.color_final_layer(x_a)
+
+        return torch.cat([rbg, sigma], dim=-1)
+
 class UniformBoxWarp(nn.Module):
     def __init__(self, sidelength):
         super().__init__()
