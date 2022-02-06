@@ -91,7 +91,7 @@ def find_saved_states(opt, use_scaler=True):
             grouped_saved_states = itertools.groupby(saved_states, key=get_time)
             for time, group in grouped_saved_states:
                 group = list(group)
-                states = {key: next(os.path.join(opt.checkpoint_dir, f) for f in group if key in f) for key in files}
+                states = {key: next((os.path.join(opt.checkpoint_dir, f) for f in group if key in f), None) for key in files}
                 if all(states.values()):
                     return states
 
@@ -99,7 +99,7 @@ def find_saved_states(opt, use_scaler=True):
     if os.path.exists(opt.output_dir):
         saved_states = os.listdir(opt.output_dir)
         saved_states = [f for f in saved_states if f in files]
-        states = {key: next(os.path.join(opt.output_dir, f) for f in saved_states if key in f) for key in files}
+        states = {key: next((os.path.join(opt.output_dir, f) for f in saved_states if key in f), None) for key in files}
         if all(states.values()):
             return states
 
