@@ -134,7 +134,9 @@ def train(rank, world_size, opt):
         generator = torch.load(checkpoint_files['generator.pth'], map_location=device)
         discriminator = torch.load(checkpoint_files['discriminator.pth'], map_location=device)
     else:
-        generator = getattr(generators, metadata['generator'])(SIREN, metadata['latent_dim']).to(device)
+        generator = getattr(generators, metadata['generator'])(
+            SIREN, metadata["latent_dim_s"], metadata["latent_dim_a"]
+        ).to(device)
         discriminator = getattr(discriminators, metadata['discriminator'])().to(device)
 
     ema = ExponentialMovingAverage(generator.parameters(), decay=0.999)
