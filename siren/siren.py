@@ -194,7 +194,24 @@ class TALLSIREN(nn.Module):
 class CROSSCONDSIREN(nn.Module):
     """Alternative siren architecture where shape output is used to condition appearance."""
 
-    def __init__(self, input_dim=2, z_s_dim=100, z_a_dim=100, hidden_dim=256, output_dim=1, device=None):
+    class ColorFiLMLayer(nn.Module):
+        def __init__(self, input_dim, hidden_dim):
+            super().__init__()
+            self.layer = nn.Linear(input_dim, hidden_dim)
+
+        def forward(self, x, freq, phase_shift):
+            x = self.layer(x)
+            return torch.sin(freq * x + phase_shift)
+
+    def __init__(
+        self,
+        input_dim=2,
+        z_s_dim=100,
+        z_a_dim=100,
+        hidden_dim=256,
+        output_dim=1,
+        device=None,
+    ):
         super().__init__()
         self.device = device
         self.input_dim = input_dim
@@ -217,7 +234,7 @@ class CROSSCONDSIREN(nn.Module):
         )
         self.final_layer = nn.Linear(hidden_dim, 1)
 
-        self.color_layer_sine = FiLMLayer(z_a_dim+3, hidden_dim)
+        self.color_layer_sine = CROSSCONDSIREN.ColorFiLMLayer(z_a_dim + 3, hidden_dim)
         self.color_layer_linear = nn.Sequential(nn.Linear(hidden_dim, 3), nn.Sigmoid())
 
         self.mapping_network_s = CustomMappingNetwork(
@@ -234,9 +251,13 @@ class CROSSCONDSIREN(nn.Module):
     def forward(self, input, z_s, z_a, ray_directions, **kwargs):
         freq_s, phase_shifts_s = self.mapping_network_s(z_s)
 
-        return self.forward_with_frequencies_phase_shifts(input, freq_s, phase_shifts_s, z_a, ray_directions, **kwargs)
+        return self.forward_with_frequencies_phase_shifts(
+            input, freq_s, phase_shifts_s, z_a, ray_directions, **kwargs
+        )
 
-    def forward_with_frequencies_phase_shifts(self, input, freq_s, phase_shifts_s, z_a, ray_directions, **kwargs):
+    def forward_with_frequencies_phase_shifts(
+        self, input, freq_s, phase_shifts_s, z_a, ray_directions, **kwargs
+    ):
         freq_s = freq_s * 15 + 30
 
         x = input
@@ -251,9 +272,17 @@ class CROSSCONDSIREN(nn.Module):
         freq_a, phase_shifts_a = self.mapping_network_a(x)
         freq_a = freq_a * 15 + 30
 
-        rbg = self.color_layer_sine(
-            torch.cat([ray_directions, z_a], dim=-1), freq_a, phase_shifts_a
+        ray_concat = torch.cat(
+            [
+                ray_directions,
+                z_a.unsqueeze(1).expand(
+                    z_a.shape[0], ray_directions.shape[1], z_a.shape[1]
+                ),
+            ],
+            dim=-1,
         )
+
+        rbg = self.color_layer_sine(ray_concat, freq_a, phase_shifts_a)
         rbg = self.color_layer_linear(rbg)
 
         return torch.cat([rbg, sigma], dim=-1)

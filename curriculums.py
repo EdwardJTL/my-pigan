@@ -144,7 +144,7 @@ CARLA = {
         "gen_lr": 4e-5,
         "disc_lr": 4e-4,
     },
-    int(50e3): {
+    int(30e3): {
         "batch_size": 15,
         "num_steps": 48,
         "img_size": 64,
@@ -174,7 +174,7 @@ CARLA = {
     "latent_dim_s": 256,
     "latent_dim_a": 256,
     "grad_clip": 1,
-    "model": "TALLSIREN",
+    "model": "CROSSCONDSIREN",
     "generator": "ImplicitGenerator3d",
     "discriminator": "ProgressiveEncoderDiscriminator",
     "dataset": "Carla",
