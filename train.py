@@ -1,9 +1,11 @@
 """Train pi-GAN. Supports distributed training."""
 
 import argparse
-import os
+import itertools
 import numpy as np
 import math
+import os
+import re
 
 from collections import deque
 
@@ -58,6 +60,49 @@ def z_sampler(shape, device, dist):
     return z
 
 
+def find_saved_states(opt, use_scaler=True):
+    files = ['generator.pth', 'discriminator.pth', 'ema.pth', 'ema2.pth', 'optimizer_G.pth', 'optimizer_D.pth']
+    if use_scaler:
+        files.append('scaler.pth')
+    timestamp_re = "\d+--\d+:\d+--"
+
+    def is_state_file(file):
+        for f in files:
+            if file.endswith(f):
+                return True
+        return False
+
+    def get_time(file):
+        try:
+            return re.search(timestamp_re, file).group(0)
+        except AttributeError:
+            # when output dir is the same as checkpoint dir, the timestamp is not found
+            return "output"
+
+    if os.path.exists(opt.checkpoint_dir):
+        saved_states = os.listdir(opt.checkpoint_dir)
+        saved_states = [f for f in saved_states if is_state_file(f)]
+        if len(saved_states) > 0:
+            saved_states.sort(key=lambda f: os.path.getctime(os.path.join(opt.checkpoint_dir, f)), reverse=True)
+            grouped_saved_states = itertools.groupby(saved_states, key=get_time)
+            for time, group in grouped_saved_states:
+                group = list(group)
+                states = {key: next(os.path.join(opt.checkpoint_dir, f) for f in group if key in f) for key in files}
+                if all(states.values()):
+                    return states
+
+    # if no saved states are found in checkpoint_dir, look in output_dir
+    if os.path.exists(opt.output_dir):
+        saved_states = os.listdir(opt.output_dir)
+        saved_states = [f for f in saved_states if f in files]
+        states = {key: next(os.path.join(opt.output_dir, f) for f in saved_states if key in f) for key in files}
+        if all(states.values()):
+            return states
+
+    # if no saved states are found in either output_dir or checkpoint_dir, return None
+    return None
+
+
 def train(rank, world_size, opt):
     torch.manual_seed(0)
 
@@ -76,22 +121,29 @@ def train(rank, world_size, opt):
 
     scaler = torch.cuda.amp.GradScaler()
 
-    if opt.load_dir != '':
-        generator = torch.load(os.path.join(opt.load_dir, 'generator.pth'), map_location=device)
-        discriminator = torch.load(os.path.join(opt.load_dir, 'discriminator.pth'), map_location=device)
-        ema = torch.load(os.path.join(opt.load_dir, 'ema.pth'), map_location=device)
-        ema2 = torch.load(os.path.join(opt.load_dir, 'ema2.pth'), map_location=device)
+    # get checkpoint files
+    checkpoint_files = find_saved_states(opt, use_scaler=not metadata.get('disable_scaler', False))
+
+    print("found checkpoint files: ", checkpoint_files)
+
+    if checkpoint_files is not None:
+        generator = torch.load(checkpoint_files['generator.pth'], map_location=device)
+        discriminator = torch.load(checkpoint_files['discriminator.pth'], map_location=device)
     else:
         generator = getattr(generators, metadata['generator'])(SIREN, metadata['latent_dim']).to(device)
         discriminator = getattr(discriminators, metadata['discriminator'])().to(device)
-        ema = ExponentialMovingAverage(generator.parameters(), decay=0.999)
-        ema2 = ExponentialMovingAverage(generator.parameters(), decay=0.9999)
+
+    ema = ExponentialMovingAverage(generator.parameters(), decay=0.999)
+    ema2 = ExponentialMovingAverage(generator.parameters(), decay=0.9999)
+
+    if checkpoint_files is not None:
+        ema.load_state_dict(torch.load(checkpoint_files['ema.pth'], map_location=device))
+        ema2.load_state_dict(torch.load(checkpoint_files['ema2.pth'], map_location=device))
 
     generator_ddp = DDP(generator, device_ids=[rank], find_unused_parameters=True)
     discriminator_ddp = DDP(discriminator, device_ids=[rank], find_unused_parameters=True, broadcast_buffers=False)
     generator = generator_ddp.module
     discriminator = discriminator_ddp.module
-
 
 
     if metadata.get('unique_lr', False):
@@ -106,11 +158,11 @@ def train(rank, world_size, opt):
 
     optimizer_D = torch.optim.Adam(discriminator_ddp.parameters(), lr=metadata['disc_lr'], betas=metadata['betas'], weight_decay=metadata['weight_decay'])
 
-    if opt.load_dir != '':
-        optimizer_G.load_state_dict(torch.load(os.path.join(opt.load_dir, 'optimizer_G.pth')))
-        optimizer_D.load_state_dict(torch.load(os.path.join(opt.load_dir, 'optimizer_D.pth')))
+    if checkpoint_files is not None:
+        optimizer_G.load_state_dict(torch.load(checkpoint_files['optimizer_G.pth'], map_location=device))
+        optimizer_D.load_state_dict(torch.load(checkpoint_files['optimizer_D.pth'], map_location=device))
         if not metadata.get('disable_scaler', False):
-            scaler.load_state_dict(torch.load(os.path.join(opt.load_dir, 'scaler.pth')))
+            scaler.load_state_dict(torch.load(checkpoint_files['scaler.pth'], map_location=device))
 
     generator_losses = []
     discriminator_losses = []
@@ -386,7 +438,7 @@ if __name__ == '__main__':
     parser.add_argument("--n_epochs", type=int, default=3000, help="number of epochs of training")
     parser.add_argument("--sample_interval", type=int, default=200, help="interval between image sampling")
     parser.add_argument('--output_dir', type=str, default='debug')
-    parser.add_argument('--load_dir', type=str, default='')
+    parser.add_argument('--checkpoint_dir', type=str)
     parser.add_argument('--curriculum', type=str, required=True)
     parser.add_argument('--eval_freq', type=int, default=5000)
     parser.add_argument('--port', type=str, default='12355')
@@ -396,5 +448,8 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     print(opt)
     os.makedirs(opt.output_dir, exist_ok=True)
+    if opt.checkpoint_dir is None:
+        opt.checkpoint_dir = opt.output_dir
+    os.makedirs(opt.checkpoint_dir, exist_ok=True)
     num_gpus = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
     mp.spawn(train, args=(num_gpus, opt), nprocs=num_gpus, join=True)
