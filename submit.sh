@@ -16,7 +16,7 @@
 #SBATCH --error=slurm-%j.err
 
 # Create Checkpoint Directory
-mkdir /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYEDPURGE
+mkdir -p /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYEDPURGE/checkpoint/
 # Local symbolic link
 ln -sfn /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYEDPURGE $PWD/checkpoint
 
@@ -27,7 +27,7 @@ source /h/edwardl/pigan/pigan_env/bin/activate
 
 # put your command here
 # python train.py
-CUDA_VISIBLE_DEVICES=0,1 python3 train.py --curriculum ShapeNetCar --output_dir /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYEDPURGE --n_epochs 3000 --sample_interval 1000 --model_save_interval 5000
+CUDA_VISIBLE_DEVICES=0,1 python3 train.py --curriculum CARLA --output_dir /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYEDPURGE --checkpoint_dir /checkpoint/${USER}/${SLURM_JOB_ID}/DELAYEDPURGE/checkpoint --n_epochs 3000 --sample_interval 1000 --model_save_interval 5000 --eval_freq 5000
 
 # copy over checkpoint files
 mkdir -p /h/edwardl/pigan/output/${SLURM_JOB_ID}/
